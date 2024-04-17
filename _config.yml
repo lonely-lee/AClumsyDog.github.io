@@ -202,3 +202,19 @@ jekyll-archives:
   permalinks:
     tag: /tags/:name/
     category: /categories/:name/
+
+jekyll_compose:
+  default_front_matter:
+    drafts:
+      author: AClumsyDog
+      categories:
+      tags:
+      math: true
+      mermaid: true
+    posts:
+      author: AClumsyDog
+      categories:
+      tags:
+      pin: true
+      math: true
+      mermaid: true
