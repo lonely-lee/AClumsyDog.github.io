@@ -206,12 +206,14 @@ jekyll-archives:
 jekyll_compose:
   default_front_matter:
     drafts:
+      last_modified_at:
       author: AClumsyDog
       categories:
       tags:
       math: true
       mermaid: true
     posts:
+      last_modified_at:
       author: AClumsyDog
       categories:
       tags:
