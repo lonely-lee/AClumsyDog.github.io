@@ -16,7 +16,7 @@ timezone: Asia/Shanghai
 
 title: AClumsyDog # the main title
 
-tagline: 一只菜鸟c++程序员 # it will display as the sub-title
+tagline: 一只c++菜鸟程序员 # it will display as the sub-title
 
 description: >- # used by seo meta and the atom feed
   A minimal, responsive and feature-rich Jekyll theme for technical writing.
@@ -34,7 +34,7 @@ twitter:
 social:
   # Change to your full name.
   # It will be displayed as the default author of the posts and the copyright owner in the Footer
-  name: 匆匆那年
+  name: AClumsyDog
   email: 3176226599@qq.com # change to your email address
   links:
     # The first element serves as the copyright owner's link
