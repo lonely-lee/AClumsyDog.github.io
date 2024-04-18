@@ -293,3 +293,124 @@ flowchart
         N --> A
         end
 ```
+
+### app的offer_service 梳理
+几个关键的容器：
+（1）routing_manager_impl 的私有 map 型容器 offer_commands_，pending_offers_，
+（2） routing_manager_base 的 protected 的 map 型容器 local_services_，（by lsf：由于是 protected 的，所以该容器应该是 routing_manager_impl 和 routing_manager_proxy 共享的）
+（3）routing_manager_base 的私有的 services_，该容器会记录所有已经注册了的服务的信息，包括 local 和 remote 的服务，在服务发现的main阶段，sd模块会调用routing_manager_base提供的公共接口routing_manager_base::get_services来获取已经注册了的服务的信息，然后发送offer_service报文
+
+```c++
+offer_service(_client, _service, _instance, _major, _minor, true);
+---> insert_offer_command(_service, _instance, VSOMEIP_OFFER_SERVICE, _client, _major, _minor);
+    routing_manager_impl 路由管理器的实例中通过一个私有的map型容器 offer_commands_ 来维护所有来自app层的 offer_service() 
+    调用，其具体类型定义如下：
+    std::map<std::pair<service_t, instance_t>, std::deque<std::tuple<uint8_t, client_t, major_version_t,
+                       minor_version_t>>>   offer_commands_; 
+    insert_offer_command() 就是将当前来自 app 层的一个 offer_service 命令存入到这个容器中。
+
+---> 从安全性考虑，结合 uid 和 gid 来检查本次的 offer_service 命令是否有权限，若没权限，就从 offer_commands_ 容器中将刚存入
+     offer_service 命令通过 erase_offer_command(_service, _instance) 删掉，并返回。
+
+---> handle_local_offer_service(_client, _service, _instance, _major, _minor);
+    routing_manager_impl 继承的父类 routing_manaer_base 中使用一个 map 类型的容器 local_services_ 来维护本地服务，其具体
+    类型定义如下：
+    typedef std::map<service_t, std::map<instance_t, std::tuple<major_version_t, minor_version_t, client_t>>>
+            local_services_map_t;
+    local_service_map_t   local_services_;
+    handle_local_offer_service()中会先进行以下几个方面的检查工作：
+    （1）从 local_services_ 容器中查找当前上层 app 想要注册的服务，若存在，则表示该上层 app 此前已经在本地注册过本次想要注册的
+        服务，函数直接返回 false，避免重复注册；否则进入 （2）。
+    （2）从 pending_offers_ 容器中查看是否已经有其它 app 已经在排队等待注册当前 app 本次想要注册的服务了，若是的，则函数直接返
+        回 false，避免重复注册； 否则进入 （3）。
+    （3）在 （2）中同时会检查当前 app 是否也已经在排队等待注册本次想要注册的服务（因为一个 app 可能会周期性地调用 offer_service
+        来注册一个服务），若是当前 app 确实是已经在排队中，则函数直接返回 false，避免重复注册；否则进入 （4）；
+    （4）如果此前已经有其它 app 注册了当前 app 本次想要注册的服务，且当前 app 并不在排队等待中，则再确认此前注册服务的 app 的是否
+        还处于 alive 状态，若是 alive 状态，则函数直接返回 false，避免重复注册；否则将当前 app 的信息填入到 pending_offers_ 
+        这个记录排队等待的 app 的容器中，等待时机到了再执行注册。
+    （5）若 local_services_ 容器中查找不到当前上层 app 本次想要注册的服务，则还会检查该服务是否已经被远端节点注册了（offered 
+        remotely），通过调用 routing_manager_base::offer_service(_client, _service, _instance, _major, _minor)来
+        完成该项检查，就是从 services_ 中查找。若该服务已经被远端节点注册了，则拒绝本地的本次注册；否则就本次想要注册的服务的信息
+        填充到 services_ 和 services_remote_中，完成本次服务注册。
+        
+---> init_service_info(_service, _instance, true);
+     该函数主要是根据json配置中的服务的端口，调用 find_or_create_server_endpoint()函数来创建和初始化服务端口（tcp/udp）,并
+     在 services_ 中对服务端口信息做好记录。
+
+---> 如果使能了 Service Discovery，则调用:
+    std::share_ptr<serviceinfo> its_info = find_service(_service, _instance);
+    if (its_info) {
+         discovery_ -> offer_service(its_info); // 通过 SD 实例来发送 offer service entry
+     }
+
+---> send_pending_subscriptions(_service, _instance, _major);
+    ---> routing_manager_impl::send_subscribe();
+        ---> stub_->send_subscribe();
+        
+---> stub->on_offer_service(_client, _service, _instance, _major, _minor);
+
+---> on_availability(_service, _instance, _true, _major, _minor);
+    ---> host->on_availability(_service, _instance, _is_available, _major, _minor); // by lsf: 触发 client 端的
+                                                                                // on_availability()回调函数
+```
+
+### 服务发现的offer_service 梳理
+几个关键容器：
+1.service_discovery_impl的私有map型容器collected_offers_，collected_offers_是一个三维数组[srvice][instance][info]，该变量通过service_discovery_impl::offer_service函数从outing_manager_base 的私有的 services_容器中拷贝而来所需要的serviceinfo，sd的stop_offer_service与之相反，collected_offers_变量会由on_offer_debounce_timer_expired函数读取
+2.rservice_discovery_impl的私有map型容器epetition_phase_timers_，该容器存放repetition_phase_timers_类型指针和services_t
+
+```c++
+紧接上文的sd模块offer service
+如果使能了 Service Discovery，则调用:
+std::share_ptr<serviceinfo> its_info = find_service(_service, _instance);
+//--->find_service为routing_manager_base::find_service函数
+if (its_info) {
+     discovery_ -> offer_service(its_info); // 通过 SD 实例来发送 offer service entry
+ }
+ offer_service(const std::shared_ptr<serviceinfo> &_info);
+从 collected_offers_ 容器中查找当前想要添加的服务是否存在，若不存在，则添加。该函数由 routing_manager_impl 调用
+
+app层start()--->routing_manager_impl::start()->on_net_interface_or_route_state_changed->start_ip_routing()--->     
+    service_discovery_impl::start()
+--->service_discovery_impl::start()
+    首先会检查sd的多播端口是否创建，其中，最主要的是调用以下函数：
+    start_main_phase_timer();
+    start_offer_debounce_timer(true);
+    start_find_debounce_timer(true);
+    start_ttl_timer();
+    
+--->start_main_phase_timer();
+    该函数会异步延时cyclic_offer_delay_之后执行on_main_phase_timer_expired函数
+    --->on_main_phase_timer_expired(const boost::system::error_code &_error);
+         --->send(true);//该函数调用service_discovery_impl::send(bool _is_announcing)
+              --->insert_offer_entries(its_messages, its_offers, false);
+              --->return send(its_messages);
+              在send(true)函数内会调用insert_offer_entries函数，该函数原型为insert_offer_entries(std::vector<std::shared_ptr<message_impl> > &_messages,const services_t &_services, bool _ignore_phase);
+              该函数具体代码为：                if ((_ignore_phase || its_instance.second->is_in_mainphase())
+                        && (its_instance.second->get_endpoint(false)
+                                || its_instance.second->get_endpoint(true))) {
+                    insert_offer_service(_messages, its_instance.second);
+                }
+            若第三个变量为false，则会判断对应的服务实例是否进入main阶段，若没有进入则不进行处理，直接返回，因此its_messages为空，在
+            send(its_messages);函数内，由于 its_messages 的entry字段为空，因此不会发送offer service报文。否则，若进入main阶    
+            段，则发送       
+         --->start_main_phase_timer();//然后重启main_phase定时器，循环往复
+         
+--->start_offer_debounce_timer(true);
+    首先会判断是否第一次开始，若是首次开始，则初始化延时initial_delay_，否则延时offer_debounce_time_，该时间为去抖动时间，即两个发    
+    送报文最短时间间隔，然后会异步调用on_offer_debounce_timer_expired函数
+    
+--->on_offer_debounce_timer_expired(const boost::system::error_code &_error);
+    该函数会依据collected_offers_内的服务发送第一个offer service报文，作为initial阶段结束，并将服务转移至
+    repetition_phase_timers_容器中，然后判断变量repetitions_max_是否为0，为0则延时cyclic_offer_delay_直接进入main阶段，否则
+    延时repetitions_base_delay_，并设置its_repetitions为1，统计循环发送offer service报文次数，待延时结束后，则直接异步调用
+    on_repetition_phase_timer_expired函数
+    
+--->on_repetition_phase_timer_expired(const boost::system::error_code &_error,const std::shared_ptr<boost::asio::steady_timer>& _timer,std::uint8_t _repetition, std::uint32_t _last_delay)
+    该函数首先会判断重复次数是否剩余为0，为0则调用以下函数
+    --->move_offers_into_main_phase(_timer);
+        将repetition_phase_timers_容器中的服务is_in_mainphase属性设置为真，并将容器删除
+    然后会发送repetition_phase_timers_容器中保存的服务offer service报文，延时异步再次调用on_repetition_phase_timer_expired
+    函数，之后当发送次数达到repetitions_max_最大值时，则执行move_offers_into_main_phase函数
+至此，initial和repet阶段结束，offer service的服务服务is_in_mainphase属性为真，on_main_phase_timer_expired函数中的send开始正常执行，发送main阶段的offer service报文
+```
