@@ -221,3 +221,75 @@ classDiagram
 	service_discovery_impl o-- remote_subscription_ack : Aggregation
 ```
 
+## offer service流程
+
+```mermaid
+flowchart
+    subgraph main阶段
+        direction TB
+        subgraph graph1
+            direction TB
+            graph1-A(start_main_phase_timer) --> graph1-B(延时cyclic_offer_delay_，异步执行on_main_phase_timer_expired)
+        end
+        subgraph graph2
+            direction TB
+            graph2-A(on_main_phase_timer_expired) -->graph2-B{判断服务是否进入main阶段}
+            graph2-B -->|yes| graph2-C(发送报文)
+            graph2-B -->|no| graph2-D(调用start_main_phase_time)
+            graph2-C --> graph2-D
+        end
+    end
+```
+
+```mermaid
+flowchart TD
+    subgraph initial和repet阶段
+        direction LR
+        subgraph graph1
+            direction TB
+            graph1-A(offer_service) --> graph1-B{判断是否在collected_offers中找到}
+            graph1-B -->|yes| C(none)
+            graph1-B -->|No| graph1-D(将offer的服务添加入collected_offers_)
+        end
+        subgraph graph2
+            direction TB
+            graph2-A(start_offer_debounce_timer) --> graph2-B{判断是否为首次运行}
+            graph2-B -->|yes| graph2-C(延时设置为initial_delay_)
+            graph2-B -->|No| graph2-D(延时设置为offer_debounce_time_)
+            graph2-D --> graph2-E(异步执行on_offer_debounce_timer_expired)
+            graph2-C --> graph2-D
+        end
+        subgraph graph3
+            direction TB
+            graph3-A(on_offer_debounce_timer_expired) --> graph3-B{判断是否为诊断模式}
+            graph3-B -->|yes| graph3-C[大致就是将collected_offers_变量中的非someip服务导入repetition_phase_offers]
+            graph3-B -->|No| graph3-D[collected_offers_导入repetition_phase_offers]
+            graph3-D --> graph3-E["发送第一个offer(初始化阶段结束)"]
+            graph3-E --> graph3-F[重复阶段时间变量赋值，将重复阶段的offer和times信息存入repetition_phase_timers_变量，异步执行on_repetition_phase_timer_expired]
+        end
+    end
+```
+
+```mermaid
+flowchart
+    subgraph repet阶段
+        direction TB
+        A(on_repetition_phase_timer_expired) --> B{判断重复执行次数是否为0}
+        B -->|yes| C(在serviceinfo中的变量is_in_mainphase是否为真, 否则从repetition_phase_timers删除对应的服务)
+        C --> D(over)
+        B -->|No| E("从repetition_phase_timers_获取对应的[timer]:[services]键值对")
+        E --> F{判断重复执行次数是否小于最大值}
+        F -->|yes| G[重复offer的延时赋值和重复次数累加]
+        F -->|no| H{判断上次offer时间距今是否超过main阶段的循环延时时间的一半}
+        G --> I(发送offer报文)
+        H --> |no|J(重复offer的延时赋值和重复次数)
+        J --> I
+        H --> |yes|K(move_to_main置为真)
+        K --> I
+        I --> L{判断move_to_main变量是否为真}
+        L -->|yes| M(将serviceinfo中的变量is_in_mainphase置为真，同时从repetition_phase_timers_删除对应的服务)
+        L -->|no| N(根据之前设置的延时，然后异步递归执行该函数)
+        M --> U(over)
+        N --> A
+        end
+```
