@@ -212,6 +212,7 @@ jekyll_compose:
       tags:
       math: true
       mermaid: true
+      img_path: /assets/img/
     posts:
       last_modified_at:
       author: AClumsyDog
@@ -220,3 +221,4 @@ jekyll_compose:
       pin: true
       math: true
       mermaid: true
+      img_path: /assets/img/

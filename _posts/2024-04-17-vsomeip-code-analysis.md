@@ -8,6 +8,7 @@ tags: ["c++", "someip", "autosar"]
 pin: true
 math: true
 mermaid: true
+img_path: /assets/img/vsomeip-code-analysis/
 ---
 
 ## 什么是SOME/IP？
@@ -50,7 +51,7 @@ SOME/IP 可用在 TCP/UDP 协议上，但是 SOME/IP-SD **只能用在 UDP 上**
 
 SOME/IP-SD 协议的报文格式如下：
 
-![SOMEIP-SD-Header-Format](/assets/img/vsomeip-code-analysis/SOMEIP-SD-Header-Format.png)
+![SOMEIP-SD-Header-Format](SOMEIP-SD-Header-Format.png)
 
 从上表可知，你会发现字段 Message ID、Protocol Version、Interface Version、Message Type、Return Code 的值都是固定的，SOME/IP-SD 的 Service ID 是 **0xFFFF**，Method ID 是 **0x8100** 。另外，SOME/IP-SD 的 Client ID 必须是 **0x0000**，因为每个设备上只有一个 SD Instance；Session ID 则是从 1 开始，逐次累加，直到翻转后再次从 1 开始（Session ID 不能设为 0）。单播和组播，**每种通信关系单独维护一个 Session ID，每组 发送-接收 关系组也单独维护一个 Session ID。**
 
@@ -70,9 +71,9 @@ SOME/IP-SD 协议的报文格式如下：
 两种类型 Entry 的**格式**如下：
 
 - **Service**
-  ![SOMEIP-SD-Service-Entry-Type](/assets/img/vsomeip-code-analysis/SOMEIP-SD-Service-Entry-Type.png)
+  ![SOMEIP-SD-Service-Entry-Type](SOMEIP-SD-Service-Entry-Type.png)
 - **Eventgroup**
-  ![SOMEIP-SD-Eventgroup-Entry-Type](/assets/img/vsomeip-code-analysis/SOMEIP-SD-Eventgroup-Entry-Type.png)
+  ![SOMEIP-SD-Eventgroup-Entry-Type](SOMEIP-SD-Eventgroup-Entry-Type.png)
 
 上表中的 **X** 是一个 1-bit 的标志 **Initial data Requested Flag**，如果需要 Server 发送初始数据，就需要将其置 1 。
 

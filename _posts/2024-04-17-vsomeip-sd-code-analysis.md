@@ -8,4 +8,5 @@ tags: ["c++", "someip", "autosar"]
 pin: true
 math: true
 mermaid: true
+img_path: /assets/img/vsomeip-sd-code-analysis/
 ---
