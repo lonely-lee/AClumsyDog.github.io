@@ -1,7 +1,7 @@
 ---
 title: vsomeip-sd模块源码分析
 date: 2024-04-17 14:57 +0800
-last_modified_at: 2024-04-18 14:31 +0800
+last_modified_at: 2024-04-19 10:36 +0800
 author: AClumsyDog
 categories: ["源码分析", "vsomeip"]
 tags: ["c++", "someip", "autosar"]
@@ -270,89 +270,101 @@ flowchart TD
     end
 ```
 
-```mermaid
-flowchart
-    subgraph repet阶段
-        direction TB
-        A(on_repetition_phase_timer_expired) --> B{判断重复执行次数是否为0}
-        B -->|yes| C(在serviceinfo中的变量is_in_mainphase是否为真, 否则从repetition_phase_timers删除对应的服务)
-        C --> D(over)
-        B -->|No| E("从repetition_phase_timers_获取对应的[timer]:[services]键值对")
-        E --> F{判断重复执行次数是否小于最大值}
-        F -->|yes| G[重复offer的延时赋值和重复次数累加]
-        F -->|no| H{判断上次offer时间距今是否超过main阶段的循环延时时间的一半}
-        G --> I(发送offer报文)
-        H --> |no|J(重复offer的延时赋值和重复次数)
-        J --> I
-        H --> |yes|K(move_to_main置为真)
-        K --> I
-        I --> L{判断move_to_main变量是否为真}
-        L -->|yes| M(将serviceinfo中的变量is_in_mainphase置为真，同时从repetition_phase_timers_删除对应的服务)
-        L -->|no| N(根据之前设置的延时，然后异步递归执行该函数)
-        M --> U(over)
-        N --> A
-        end
-```
+![VSOMEIP-SD-Offer-Repet](VSOMEIP-SD-Offer-Repet.png)
 
 ### app的offer_service 梳理
 几个关键的容器：
-（1）routing_manager_impl 的私有 map 型容器 offer_commands_，pending_offers_，
-（2） routing_manager_base 的 protected 的 map 型容器 local_services_，（by lsf：由于是 protected 的，所以该容器应该是 routing_manager_impl 和 routing_manager_proxy 共享的）
-（3）routing_manager_base 的私有的 services_，该容器会记录所有已经注册了的服务的信息，包括 local 和 remote 的服务，在服务发现的main阶段，sd模块会调用routing_manager_base提供的公共接口routing_manager_base::get_services来获取已经注册了的服务的信息，然后发送offer_service报文
+
+1. routing_manager_impl 的私有 map 型容器 offer_commands\_，pending_offers\_
+2. routing_manager_base 的 protected 的 map 型容器 local_services_，（由于是 protected 的，所以该容器应该是 routing_manager_impl 和 routing_manager_proxy 共享的）
+3. routing_manager_base 的私有的 services_，该容器会记录所有已经注册了的服务的信息，包括 local 和 remote 的服务，在服务发现的main阶段，sd模块会调用routing_manager_base提供的公共接口routing_manager_base::get_services来获取已经注册了的服务的信息，然后发送offer_service报文
+
+```mermaid
+flowchart
+A("offer_service(_client, _service, _instance, _major, _minor, true)")-->B("insert_offer_command(_service, _instance, VSOMEIP_OFFER_SERVICE, _client, _major, _minor)")
+B-->C("通过 uid 和 gid 来检查本次的 offer_service 命令是否有权限")
+C-->|no|D("erase_offer_command(_service, _instance)")
+C-->|yes|E("handle_local_offer_service(_client, _service, _instance, _major, _minor)")
+D-->Q("返回false")
+E-->|false|Z("返回false")
+E-->|true|F("init_service_info(_service, _instance, true)")
+F-->G("Service Discovery是否使能")
+G-->|使能|H("通过 SD 实例来发送 offer service entry")
+G-->|没使能|I("send_pending_subscriptions(_service, _instance, _major)")
+H-->I
+I-->J("stub->on_offer_service(_client, _service, _instance, _major, _minor)")
+J-->K(on_availability)
+```
+
+routing_manager_impl 路由管理器的实例中通过一个私有的map型容器 offer_commands_ 来维护所有来自app层的offer_service()调用，其具体类型定义如下：
 
 ```c++
-offer_service(_client, _service, _instance, _major, _minor, true);
----> insert_offer_command(_service, _instance, VSOMEIP_OFFER_SERVICE, _client, _major, _minor);
-    routing_manager_impl 路由管理器的实例中通过一个私有的map型容器 offer_commands_ 来维护所有来自app层的 offer_service() 
-    调用，其具体类型定义如下：
-    std::map<std::pair<service_t, instance_t>, std::deque<std::tuple<uint8_t, client_t, major_version_t,
-                       minor_version_t>>>   offer_commands_; 
-    insert_offer_command() 就是将当前来自 app 层的一个 offer_service 命令存入到这个容器中。
-
----> 从安全性考虑，结合 uid 和 gid 来检查本次的 offer_service 命令是否有权限，若没权限，就从 offer_commands_ 容器中将刚存入
-     offer_service 命令通过 erase_offer_command(_service, _instance) 删掉，并返回。
-
----> handle_local_offer_service(_client, _service, _instance, _major, _minor);
-    routing_manager_impl 继承的父类 routing_manaer_base 中使用一个 map 类型的容器 local_services_ 来维护本地服务，其具体
-    类型定义如下：
-    typedef std::map<service_t, std::map<instance_t, std::tuple<major_version_t, minor_version_t, client_t>>>
-            local_services_map_t;
-    local_service_map_t   local_services_;
-    handle_local_offer_service()中会先进行以下几个方面的检查工作：
-    （1）从 local_services_ 容器中查找当前上层 app 想要注册的服务，若存在，则表示该上层 app 此前已经在本地注册过本次想要注册的
-        服务，函数直接返回 false，避免重复注册；否则进入 （2）。
-    （2）从 pending_offers_ 容器中查看是否已经有其它 app 已经在排队等待注册当前 app 本次想要注册的服务了，若是的，则函数直接返
-        回 false，避免重复注册； 否则进入 （3）。
-    （3）在 （2）中同时会检查当前 app 是否也已经在排队等待注册本次想要注册的服务（因为一个 app 可能会周期性地调用 offer_service
-        来注册一个服务），若是当前 app 确实是已经在排队中，则函数直接返回 false，避免重复注册；否则进入 （4）；
-    （4）如果此前已经有其它 app 注册了当前 app 本次想要注册的服务，且当前 app 并不在排队等待中，则再确认此前注册服务的 app 的是否
-        还处于 alive 状态，若是 alive 状态，则函数直接返回 false，避免重复注册；否则将当前 app 的信息填入到 pending_offers_ 
-        这个记录排队等待的 app 的容器中，等待时机到了再执行注册。
-    （5）若 local_services_ 容器中查找不到当前上层 app 本次想要注册的服务，则还会检查该服务是否已经被远端节点注册了（offered 
-        remotely），通过调用 routing_manager_base::offer_service(_client, _service, _instance, _major, _minor)来
-        完成该项检查，就是从 services_ 中查找。若该服务已经被远端节点注册了，则拒绝本地的本次注册；否则就本次想要注册的服务的信息
-        填充到 services_ 和 services_remote_中，完成本次服务注册。
-        
----> init_service_info(_service, _instance, true);
-     该函数主要是根据json配置中的服务的端口，调用 find_or_create_server_endpoint()函数来创建和初始化服务端口（tcp/udp）,并
-     在 services_ 中对服务端口信息做好记录。
-
----> 如果使能了 Service Discovery，则调用:
-    std::share_ptr<serviceinfo> its_info = find_service(_service, _instance);
-    if (its_info) {
-         discovery_ -> offer_service(its_info); // 通过 SD 实例来发送 offer service entry
-     }
-
----> send_pending_subscriptions(_service, _instance, _major);
-    ---> routing_manager_impl::send_subscribe();
-        ---> stub_->send_subscribe();
-        
----> stub->on_offer_service(_client, _service, _instance, _major, _minor);
-
----> on_availability(_service, _instance, _true, _major, _minor);
-    ---> host->on_availability(_service, _instance, _is_available, _major, _minor); // by lsf: 触发 client 端的
-                                                                                // on_availability()回调函数
+std::map<std::pair<service_t, instance_t>, std::deque<std::tuple<uint8_t, client_t, major_version_t, minor_version_t>>> offer_commands_; 
 ```
+
+insert_offer_command() 就是将当前来自 app 层的一个 offer_service 命令存入到这个容器中。
+
+insert_offer_command()会从安全性考虑，结合 uid 和 gid 来检查本次的 offer_service 命令是否有权限，若没权限，就从 offer_commands_ 容器中将刚存入offer_service通过`erase_offer_command(_service, _instance)`删掉，并返回。
+
+routing_manager_impl 继承的父类 routing_manaer_base 中使用一个 map 类型的容器 local_services_ 来维护本地服务，其具体类型定义如下：
+
+```c++
+typedef std::map<service_t, std::map<instance_t, std::tuple<major_version_t, minor_version_t, client_t>>> local_services_map_t;
+local_service_map_t local_services_;
+```
+
+handle_local_offer_service()中会先进行以下几个方面的检查工作：
+
+```mermaid
+flowchart
+A("从local_services_容器中查找当前上层 app想要注册的服务")
+A-->|不存在当前app|B("从 pending_offers_ 容器中查看是否已经有其它 app 已经在排队等待注册当前 app 本次想要注册的服务")
+A-->|存在|Q("返回false")
+B-->|不存在|C("当前 app 是否也已经在排队等待注册本次想要注册的服务")
+B-->|存在|L(返回false)
+C-->|不存在|D("其它 app 注册了当前 app 本次想要注册的服务，当前 app 并不在排队等待中，确认此前注册服务的 app 的是否还处于 alive 状态")
+C-->|存在|M(返回false)
+D-->|alive|U(返回false)
+D-->|no|E("当前 app 的信息填入到 pending_offers_，待时机到了再执行注册")
+A-->|完全不存在服务|F("检查该服务是否已经被远端节点注册")
+```
+
+
+
+1. 从 local_services_ 容器中查找当前上层 app 想要注册的服务，若存在，则表示该上层 app 此前已经在本地注册过本次想要注册的服务了，函数直接返回 false，避免重复注册；否则进入2。
+2. 从 pending_offers_ 容器中查看是否已经有其它 app 已经在排队等待注册当前 app 本次想要注册的服务了，若是的，则函数直接返
+   回 false，避免重复注册； 否则进入3。
+3. 在 2 中同时会检查当前 app 是否也已经在排队等待注册本次想要注册的服务（因为一个 app 可能会周期性地调用 offer_service来注册一个服务），若是当前 app 确实是已经在排队中，则函数直接返回 false，避免重复注册；否则进入4。
+4. 如果此前已经有其它 app 注册了当前 app 本次想要注册的服务，且当前 app 并不在排队等待中，则再确认此前注册服务的 app 的是否还处于 alive 状态，若是 alive 状态，则函数直接返回 false，避免重复注册；否则将当前 app 的信息填入到 pending_offers_ 这个记录排队等待的 app 的容器中，等待时机到了再执行注册。
+5. 若 local_services_ 容器中查找不到当前上层 app 本次想要注册的服务，则还会检查该服务是否已经被远端节点注册了（offered remotely），通过调用 routing_manager_base::offer_service(_client, _service, _instance, _major, _minor)来完成该项检查，就是从 services_ 中查找。若该服务已经被远端节点注册了，则拒绝本地的本次注册；否则就本次想要注册的服务的信息填充到 services_ 和 services_remote_中，完成本次服务注册。
+
+init_service_info主要是根据json配置中的服务的端口，调用 find_or_create_server_endpoint()函数来创建和初始化服务端口（tcp/udp）,并在 services_ 中对服务端口信息做好记录。
+
+如果使能了 Service Discovery，则调用：
+
+```c++
+std::share_ptr<serviceinfo> its_info = find_service(_service, _instance);
+if (its_info) {
+	discovery_ -> offer_service(its_info); // 通过 SD 实例来发送 offer service entry
+}
+```
+
+send_pending_subscriptions函数流程如下：
+
+```mermaid
+flowchart
+A("send_pending_subscriptions")-->B("routing_manager_impl::send_subscribe()")
+B-->C("stub_->send_subscribe()")
+```
+
+on_availability函数流程如下：
+
+```mermaid
+flowchart
+A("on_availability(_service, _instance, _true, _major, _minor)")-->B("host->on_availability(_service, _instance, _is_available, _major, _minor)")
+```
+
+最后触发 client 端的on_availability()回调函数。
 
 ### 服务发现的offer_service 梳理
 几个关键容器：
