@@ -1,7 +1,7 @@
 ---
 title: vsomeip-sd模块源码分析
 date: 2024-04-17 14:57 +0800
-last_modified_at: 2024-04-19 10:36 +0800
+last_modified_at: 2024-04-19 10:52 +0800
 author: AClumsyDog
 categories: ["源码分析", "vsomeip"]
 tags: ["c++", "someip", "autosar"]
@@ -273,6 +273,9 @@ flowchart TD
 ![VSOMEIP-SD-Offer-Repet](VSOMEIP-SD-Offer-Repet.png)
 
 ### app的offer_service 梳理
+
+#### routing_manager_impl 路线
+
 几个关键的容器：
 
 1. routing_manager_impl 的私有 map 型容器 offer_commands\_，pending_offers\_
@@ -365,6 +368,27 @@ A("on_availability(_service, _instance, _true, _major, _minor)")-->B("host->on_a
 ```
 
 最后触发 client 端的on_availability()回调函数。
+
+#### routing_manager_proxy 路线
+
+```mermaid
+flowchart
+A("routing_manager_base::offer_service(_client, _service, _instance, _major, _minor)")-->B("send_offer_service(_client, _service, _instance, _major, _minor)")
+```
+
+routing_manager_base::offer_service在 routing_manager_impl 的路线 handle_local_offer_service()中也出现了，就是检查本次想注册的服务是否已经被本地或远端的其它应用注册了，若没有，则完成此次注册；否则就放弃此次注册。
+
+send_offer_service流程如下：
+
+```mermaid
+flowchart
+A("send_offer_service(_client, _service, _instance, _major, _minor)")-->B("sender_ -> send(its_command, sizeof(its_command))")
+B -->C("local_client_endpoint_impl::send()")
+```
+
+proxy这边的offer_service的逻辑，就是构建了一个VSOMEIP_OFFER_SERVICE的指令，通过unix域通信的方式，把指令发给了host路由，host路由的模块响应该指令的地方就是在routing_manager_stub中的on_message方法中。
+
+从上可知，由于 SD 的实例只会在 routing_manager_impl 实例中创建和初始化一次，所以 routing_manager_proxy 路线的 offer_service() 只会通过 local_client_endpoint_impl 这个端口来传送，完成服务注册。而后续会按需由 routing_manager_impl 来通过 SD 实例接口将注册的服务发布给远端。
 
 ### 服务发现的offer_service 梳理
 几个关键容器：
